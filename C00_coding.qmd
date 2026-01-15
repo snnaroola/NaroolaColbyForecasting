@@ -92,7 +92,7 @@ Let's plot these geometries, and add the points on top.
 plot(coast, col = "orange", lwd = 2, axes = TRUE, reset = FALSE,
      main = "Buoys in the Gulf of Maine")
 plot(st_geometry(buoys), pch = 1, cex = 0.5, add = TRUE)
-text(st_geometry(buoys), labels = buoys$id, cex = 0.7, adj = c(1,-0.1))
+text(st_geometry(buoys), labels = buoys$id, cex = 0.7, adj = c(1,-0.2))
 ```
 
 ### Array data (aka raster data)
