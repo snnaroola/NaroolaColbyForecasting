@@ -1,4 +1,5 @@
 # assignment_script_1.R
+# sumira naroola
 source("setup.R")
 
 # bouy m01
