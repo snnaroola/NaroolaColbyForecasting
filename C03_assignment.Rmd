@@ -1,0 +1,169 @@
+---
+title: "C03_assignment"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Species 2 Malacoraja senta
+
+This is similar to the thorny skate but is only really present in the Gulf of Maine
+so it could be cool to look at
+
+## Code and plots for assignment 3
+
+```{r}
+source("setup.R")
+
+SPECIES2 <- "Malacoraja senta"
+VERSION2 <- "v1"
+MIN_YEAR <- 1970
+NBACK_PER_MONTH <- 1000
+```
+
+```{r}
+senta_raw <- fetch_obis(scientificname = SPECIES2)
+senta_raw
+dim(senta_raw)
+
+obs2 <- read_observations(scientificname = SPECIES2, minimum_year = MIN_YEAR)
+obs2
+dim(obs2)
+```
+
+```{r}
+coast <- read_coastline()
+
+db_mask <- brickman_database() |>
+  dplyr::filter(scenario == "STATIC", var == "mask")
+
+mask <- read_brickman(db_mask)
+mask
+```
+
+```{r}
+thinned_obs2 <- sapply(month.abb,
+  function(mon){
+    thin_by_cell(obs2 |> dplyr::filter(month == mon), mask)
+  }, simplify = FALSE) |>
+  dplyr::bind_rows()
+
+thinned_obs2
+nrow(thinned_obs2)
+```
+
+```{r}
+
+thinned_counts2 <- dplyr::count(sf::st_drop_geometry(thinned_obs2), month)
+
+LON0 <- -67
+LAT0 <- 46
+
+ggplot2::ggplot() +
+  ggplot2::geom_sf(
+    data = thinned_obs2,
+    alpha = 0.2,
+    shape = "circle small",
+    size = 1
+  ) +
+  ggplot2::geom_sf(data = coast, col = "orange") +
+  ggplot2::geom_text(
+    data = thinned_counts2,
+    mapping = ggplot2::aes(x = LON0, y = LAT0, label = sprintf("n: %i", .data$n)),
+    size = 3
+  ) +
+  ggplot2::labs(x = "Longitude", y = "Latitude", title = "Thinned observations") +
+  ggplot2::facet_wrap(~month)
+```
+
+```{r}
+bias_map2 <- rasterize_point_density(obs2, mask)
+bias_map2
+```
+
+
+```{r}
+obsbkg2 <- sapply(month.abb,
+  function(mon){
+    sample_background(
+      thinned_obs2 |> dplyr::filter(month == mon),
+      bias_map2,
+      method = "bias",
+      return_pres = TRUE,
+      n = NBACK_PER_MONTH
+    ) |>
+      dplyr::mutate(month = mon, .before = 1)
+  }, simplify = FALSE) |>
+  dplyr::bind_rows() |>
+  dplyr::mutate(month = factor(month, levels = month.abb))
+
+obsbkg2
+dplyr::count(sf::st_drop_geometry(obsbkg2), month, class)
+```
+
+
+```{r}
+db_present2 <- brickman_database() |>
+  dplyr::filter(scenario == "PRESENT", interval == "mon")
+
+present2 <- read_brickman(db_present2)
+present2
+```
+
+```{r}
+keep_domain2 <- filter_collinear(present2, method = "cor_caret", cutoff = 0.65)
+keep_domain2
+attr(keep_domain2, "to_remove")
+```
+
+```{r}
+KEEP_VARS2 <- c("depth", "month", "SST", "Tbtm", "MLD")
+KEEP_VARS2
+
+```
+
+```{r}
+# add depth
+present2_plus_depth <- read_brickman(add = c("depth"))
+
+vars2 <- extract_brickman(present2_plus_depth, obsbkg2, form = "wide")
+vars2
+```
+
+```{r}
+
+model_input2 <- vars2 |>
+  dplyr::mutate(class = obsbkg2$class) |>
+  dplyr::select(-.id)
+
+
+model_input2 <- model_input2 |>
+  dplyr::select(all_of(c("geometry", "class", KEEP_VARS2)))
+
+model_input2
+dim(model_input2)
+names(model_input2)
+```
+
+```{r}
+cfg2 <- list(
+  version = VERSION2,
+  scientificname = SPECIES2,
+  background = "thin_by_cell + bias-weighted background (monthly, fixed N)",
+  keep_vars = KEEP_VARS2
+)
+
+ok <- make_path(data_path("models"))
+write_configuration(cfg2)
+read_configuration(scientificname = SPECIES2, version = VERSION2)
+
+write_model_input(model_input2, scientificname = SPECIES2, version = VERSION2)
+
+mi2 <- read_model_input(scientificname = SPECIES2, version = VERSION2)
+mi2
+dim(mi2)
+names(mi2)
+```
+
