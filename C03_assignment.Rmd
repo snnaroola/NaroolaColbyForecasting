@@ -7,163 +7,204 @@ output: github_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-## Species 2 Malacoraja senta
-
-This is similar to the thorny skate but is only really present in the Gulf of Maine
-so it could be cool to look at
-
-## Code and plots for assignment 3
-
 ```{r}
 source("setup.R")
 
 SPECIES2 <- "Malacoraja senta"
 VERSION2 <- "v1"
-MIN_YEAR <- 1970
-NBACK_PER_MONTH <- 1000
 ```
 
-```{r}
-senta_raw <- fetch_obis(scientificname = SPECIES2)
-senta_raw
-dim(senta_raw)
+## Species 2 Malacoraja senta
 
-obs2 <- read_observations(scientificname = SPECIES2, minimum_year = MIN_YEAR)
-obs2
-dim(obs2)
+This is similar to the thorny skate but is only really present in the Gulf of Maine
+so it could be cool to look at. I then loaded in the brickman data, created a tibble of the monthly counts and plotted them on the brickman mask.
+
+
+```{r load_obs_mask}
+coast = read_coastline()
+obs = read_observations(scientificname = SPECIES2, minimum_year = 1970)
+db = brickman_database() |>
+  filter(scenario == "STATIC", var == "mask")
+mask = read_brickman(db)
 ```
 
-```{r}
-coast <- read_coastline()
-
-db_mask <- brickman_database() |>
-  dplyr::filter(scenario == "STATIC", var == "mask")
-
-mask <- read_brickman(db_mask)
-mask
+```{r all_observations_count}
+LON0 = -67
+LAT0 = 46
+all_counts = count(st_drop_geometry(obs), month) # counting is faster without spatial baggage
+all_counts
 ```
 
-```{r}
-thinned_obs2 <- sapply(month.abb,
-  function(mon){
-    thin_by_cell(obs2 |> dplyr::filter(month == mon), mask)
-  }, simplify = FALSE) |>
-  dplyr::bind_rows()
-
-thinned_obs2
-nrow(thinned_obs2)
+```{r all_observations}
+ggplot() +
+  geom_sf(data = obs, alpha = 0.2, shape = "circle small", size = 1) +
+  geom_sf(data = coast, col = "orange") +
+  geom_text(data = all_counts,
+            mapping = aes(x = LON0, 
+                          y = LAT0, 
+                          label = sprintf("n: %i", .data$n)),
+                          size = 3) + 
+  labs(x = "Longitude", y = "Latitude", title = "All observations") +
+  facet_wrap(~month)
 ```
 
-```{r}
+## Thinning observations (one obs per grid)
+```{r thin_observations}
+thinned_obs = sapply(month.abb,
+               function(mon){ 
+                 thin_by_cell(obs |> filter(month == mon), mask)
+               }, simplify = FALSE) |>
+  dplyr::bind_rows() 
 
-thinned_counts2 <- dplyr::count(sf::st_drop_geometry(thinned_obs2), month)
+# another count
+thinned_counts = count(st_drop_geometry(thinned_obs), month)
 
-LON0 <- -67
-LAT0 <- 46
-
-ggplot2::ggplot() +
-  ggplot2::geom_sf(
-    data = thinned_obs2,
-    alpha = 0.2,
-    shape = "circle small",
-    size = 1
-  ) +
-  ggplot2::geom_sf(data = coast, col = "orange") +
-  ggplot2::geom_text(
-    data = thinned_counts2,
-    mapping = ggplot2::aes(x = LON0, y = LAT0, label = sprintf("n: %i", .data$n)),
-    size = 3
-  ) +
-  ggplot2::labs(x = "Longitude", y = "Latitude", title = "Thinned observations") +
-  ggplot2::facet_wrap(~month)
+ggplot() +
+  geom_sf(data = thinned_obs, 
+          alpha = 0.2, 
+          shape = "circle small", 
+          size = 1) +
+  geom_sf(data = coast, col = "orange") +
+  geom_text(data = thinned_counts,
+            mapping = aes(x = LON0, 
+                          y = LAT0, 
+                          label = sprintf("n: %i", .data$n)),
+                          size = 3) + 
+  labs(x = "Longitude", y = "Latitude", title = "Thinned observations") +
+  facet_wrap(~month)
 ```
 
-```{r}
-bias_map2 <- rasterize_point_density(obs2, mask)
-bias_map2
-```
+## Bias map
+```{r bias_map}
+bias_map = rasterize_point_density(obs, mask) # <-- note the original observations
 
-
-```{r}
-obsbkg2 <- sapply(month.abb,
-  function(mon){
-    sample_background(
-      thinned_obs2 |> dplyr::filter(month == mon),
-      bias_map2,
-      method = "bias",
-      return_pres = TRUE,
-      n = NBACK_PER_MONTH
-    ) |>
-      dplyr::mutate(month = mon, .before = 1)
-  }, simplify = FALSE) |>
-  dplyr::bind_rows() |>
-  dplyr::mutate(month = factor(month, levels = month.abb))
-
-obsbkg2
-dplyr::count(sf::st_drop_geometry(obsbkg2), month, class)
+ggplot() +
+  geom_stars(data = bias_map, aes(fill = count)) +
+  scale_fill_viridis_b(na.value = "transparent") +
+  geom_sf(data = coast, col = "orange") + 
+  labs(x = "Longitude", y = "Latitude", title = "Bias map using all observations")
 ```
 
 
-```{r}
-db_present2 <- brickman_database() |>
+## Creating background points
+```{r n_background_per_month}
+nback_avg = 1000
+nback_avg
+```
+
+```{r sample_background}
+obsbkg = sapply(month.abb,
+    function(mon){ 
+      sample_background(thinned_obs |> filter(month == mon), # <- just this month
+                       bias_map,
+                       method = "bias",  # <-- it needs to know it's a bias map
+                       return_pres = TRUE, # <-- give me the obs back, too
+                       n = nback_avg) |>   # <-- how many points
+        mutate(month = mon, .before = 1)
+    }, simplify = FALSE) |>
+  bind_rows() |>
+  mutate(month = factor(month, levels = month.abb))
+obsbkg 
+```
+
+```{r nback_avg}
+# drop the spatial baggage to speed the tally
+count(st_drop_geometry(obsbkg), month, class)
+```
+## Background vs Presense Plot
+```{r plot_presence_background}
+ggplot() +
+  geom_sf(data = dplyr::filter(obsbkg, class == "background"),
+          aes(color = class),
+          alpha = 0.2, size = 1) +
+  geom_sf(data = dplyr::filter(obsbkg, class == "presence"),
+          aes(color = class),
+          alpha = 0.9, size = 1) +
+  geom_sf(data = coast, col = "orange") +
+  scale_color_okabe_ito() +
+  labs(x = "Longitude", y = "Latitude", title = "Presence vs Background") +
+  theme_bw() +
+  facet_wrap(~month)
+```
+
+## Saving model input file
+```{r save_model_input}
+write_model_input(obsbkg, scientificname = SPECIES2, version = VERSION2)
+```
+
+```{r read_model_input}
+x = read_model_input(scientificname = SPECIES2, version = VERSION2)
+```
+
+```{r read_brickman}
+db = brickman_database() |>
   dplyr::filter(scenario == "PRESENT", interval == "mon")
-
-present2 <- read_brickman(db_present2)
-present2
+present = read_brickman(db)
 ```
 
-```{r}
-keep_domain2 <- filter_collinear(present2, method = "cor_caret", cutoff = 0.65)
-keep_domain2
-attr(keep_domain2, "to_remove")
+## Pair plot of present
+```{r pairs}
+pairs(present)
 ```
 
-```{r}
-KEEP_VARS2 <- c("depth", "month", "SST", "Tbtm", "MLD")
-KEEP_VARS2
-
+```{r filter_collinear}
+keep = filter_collinear(present, method = "cor_caret", cutoff = 0.65)
+keep
 ```
 
-```{r}
-# add depth
-present2_plus_depth <- read_brickman(add = c("depth"))
-
-vars2 <- extract_brickman(present2_plus_depth, obsbkg2, form = "wide")
-vars2
+```{r drop_me}
+drop_me = attr(keep, "to_remove")
+drop_me
 ```
 
-```{r}
-
-model_input2 <- vars2 |>
-  dplyr::mutate(class = obsbkg2$class) |>
-  dplyr::select(-.id)
-
-
-model_input2 <- model_input2 |>
-  dplyr::select(all_of(c("geometry", "class", KEEP_VARS2)))
-
-model_input2
-dim(model_input2)
-names(model_input2)
+```{r add_depth_and_month}
+keep = c("depth", "month", "SST", "Tbtm", "MLD")
+keep
 ```
 
-```{r}
-cfg2 <- list(
+```{r present_model_input}
+model_input = read_model_input(scientificname = SPECIES2, version = VERSION2)
+
+model_input
+```
+## Violin plot of kept variables
+
+```{r reload_brickman}
+present = read_brickman(add = c("depth"))
+
+variables = extract_brickman(present, model_input, form = "wide")
+variables
+
+variables = variables |>
+  mutate(class = model_input$class) |>
+  select(-.id)
+
+variables = variables |>
+  select(all_of(c("geom", "class", keep)))
+
+variables
+
+plot_pres_vs_bg(variables |> select(-month), "class")
+```
+
+
+```{r make_config}
+cfg = list(
   version = VERSION2,
   scientificname = SPECIES2,
-  background = "thin_by_cell + bias-weighted background (monthly, fixed N)",
-  keep_vars = KEEP_VARS2
-)
-
-ok <- make_path(data_path("models"))
-write_configuration(cfg2)
-read_configuration(scientificname = SPECIES2, version = VERSION2)
-
-write_model_input(model_input2, scientificname = SPECIES2, version = VERSION2)
-
-mi2 <- read_model_input(scientificname = SPECIES2, version = VERSION2)
-mi2
-dim(mi2)
-names(mi2)
+  background = "average of observations per month",
+  keep_vars =  keep)
 ```
+
+```{r save config}
+ok = make_path(data_path("models")) # make a directory for models
+write_configuration(cfg)            
+```
+```{r save_input_data}
+write_model_input(variables, scientificname = SPECIES2, version = VERSION2)
+```
+
+
+
+
 
