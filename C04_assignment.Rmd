@@ -1,0 +1,212 @@
+---
+title: "Untitled"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+## Species 2 Malacoraja senta Model Building (assignment 4)
+
+This is similar to the thorny skate but is only really present in the Gulf of Maine so it could be cool to look at. I then loaded in the brickman data, created a tibble of the monthly counts and plotted them on the brickman mask.
+
+```{r}
+source("setup.R")
+
+library(workflowsets)
+library(tune)
+
+
+SPECIES2 <- "Malacoraja senta"
+VERSION2 <- "v1"
+```
+
+## Loading data
+```{r load_data}
+cfg = read_configuration(scientificname = SPECIES2, version = VERSION2)
+
+model_input = read_model_input(
+  scientificname = SPECIES2,
+  version = VERSION2,
+  log_me = c("depth")
+) |>
+  dplyr::mutate(
+    month  = month_as_number(.data$month),
+    weight = dplyr::if_else(class == "presence", 5, 1)
+  ) |>
+  dplyr::select(all_of(c("class", "weight", cfg$keep_vars)))
+
+```
+
+## splitting into training and testing data
+```{r initial_split}
+model_input_split = spatial_initial_split(model_input, 
+                        prop = 1 / 5,     # 20% for testing
+                        strategy = spatial_block_cv) # see ?spatial_block_cv
+model_input_split
+```
+
+```{r initial_split_plot}
+autoplot(model_input_split)
+```
+
+```{r cv_training}
+tr_data = training(model_input_split)
+cv_tr_data <- spatial_block_cv(tr_data,
+  v = 5,     
+  cellsize = grid_cellsize(model_input),
+  offset = grid_offset(model_input) + 0.00001
+)
+autoplot(cv_tr_data)
+```
+
+## creating the recipe
+```{r recipe}
+# recipe should be defined from the FULL training data so roles are stable
+rec = recipe(class ~ ., data = tr_data) |>
+  # make sure weight is not a predictor
+  update_role(weight, new_role = "case_weight") |>
+  # make sure geom is not a predictor
+  update_role(geom, new_role = "coords")
+
+rec
+summary(rec)
+```
+
+```{r make_workflow}
+wflow = workflow_set(
+  
+  preproc = list(default = rec), # not much happening in our preprocessor
+  
+  models = list(                 # but we have 4 models to add
+    
+      # very simple - nothing to tune
+      glm = logistic_reg(
+          mode = "classification") |>
+        set_engine("glm"),
+      
+      # two knobs to tune
+      rf = rand_forest(
+         mtry = tune(),
+         trees = 1000,
+         mode = "classification"
+      ) |>
+         set_engine(
+            "ranger",
+            importance = "impurity"
+      ),
+
+      
+      # so many things to tune!
+      btree = boost_tree(
+          mtry = tune(), 
+          trees = tune(), 
+          tree_depth = tune(), 
+          learn_rate = tune(), 
+          loss_reduction = tune(), 
+          stop_iter = tune(),
+          mode = "classification") |>
+          set_engine("xgboost"),
+    
+      # just two again
+      maxent = maxent(
+          feature_classes = tune(),
+          regularization_multiplier = tune(),
+          mode = "classification") |>
+        set_engine("maxnet")
+  )
+)
+wflow
+```
+
+```{r metrics}
+metrics = sdm_metric_set(yardstick::roc_auc)
+metrics
+```
+
+```{r fit, warning = FALSE}
+wflow <- wflow |>
+  workflow_map("tune_grid",
+    resamples = cv_tr_data, 
+    grid = 5,
+    metrics = metrics, 
+    verbose = TRUE)
+```
+
+## Plots of model comparisons
+Here's a quick plot of the outputs, with each metric being showcased.
+```{r plot_wflow}
+#autoplot didnt work so i just ggplot plotted it instead
+metrics_tbl <- tune::collect_metrics(wflow)
+
+metrics_tbl |>
+  dplyr::filter(.metric == "roc_auc") |>
+  ggplot2::ggplot(ggplot2::aes(x = mean, y = wflow_id)) +
+  ggplot2::geom_point(size = 3) +
+  ggplot2::labs(
+    x = "Mean ROC AUC",
+    y = "Model",
+    title = "Model performance comparison"
+  )
+```
+
+
+```{r select_best}
+model_fits = workflowset_selectomatic(wflow, model_input_split,
+                                  filename = "Malacoraja_senta-v1-model_fits",
+                                  path = data_path("models"))
+model_fits
+```
+
+```{r model_fit_metrics}
+model_fit_metrics(model_fits)
+```
+
+
+```{r model_fit_confmat}
+model_fit_confmat(model_fits)
+```
+
+```{r model_fit_roc_auc}
+model_fit_roc_auc(model_fits)
+```
+
+```{r model_fit_vip}
+model_fit_varimp_plot(model_fits)
+```
+
+```{r boosted tree}
+rf = model_fits |>
+  filter(wflow_id == "default_btree")
+rf
+```
+
+```{r rf_splits}
+autoplot(rf$splits[[1]])
+```
+
+```{r rf_metrics}
+rf$.metrics[[1]]
+```
+
+```{r rf_preds}
+rf$.predictions[[1]]
+```
+
+```{r rf_workflow}
+rf$.workflow[[1]]
+```
+
+```{r pd_plot}
+# pretty sure this doesnt work because there is a 5-6 variable mismatch
+# model_fit_pdp(model_fits, wid = "default_btree", title = "Boosted Tree")
+```
+
+
+
+
+
+## GitHub Documents
+
+This is an R Markdown format used for publishing markdown documents to GitHub. When you click the **Knit** button all R code chunks are run and a markdown file (.md) suitable for publishing to GitHub is generated.
+
